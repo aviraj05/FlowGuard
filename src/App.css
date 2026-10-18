@@ -1,0 +1,13 @@
+/*
+  App.css — intentionally minimal.
+  All design tokens and shared component styles live in index.css.
+  Only add rules here if they are strictly scoped to App-level layout
+  and cannot reasonably live in index.css or a component's inline style.
+*/
+
+/* Responsive grid collapse for the two-column rows */
+@media (max-width: 900px) {
+  #main-content > div {
+    grid-template-columns: 1fr !important;
+  }
+}
