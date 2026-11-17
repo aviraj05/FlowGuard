@@ -1,8 +1,12 @@
 # FlowGuard
 
-**Network traffic monitoring, ML-assisted threat detection and security-aware load balancing**
+**An on-site network guard for campuses: ML-based attack detection, security-aware load balancing and instant alerts**
 
-FlowGuard is a Computer Networks Laboratory (CSE20110) mini project. It puts an ML-based intrusion detector in front of an HAProxy load balancer in a Mininet-emulated network, so flood traffic is blocked at the switch before it reaches the back-ends. A FastAPI gateway and a React dashboard stream, store and visualise the classified traffic.
+Cloud DDoS protection (Cloudflare, AWS Shield) guards the front door from the internet. It never sees attacks that start *inside* the network: an infected lab PC flooding the exam server, or a compromised device scanning the LAN. FlowGuard sits in front of your internal servers and does the following:
+- detects attacks in about a second with an ML model
+- blocks the source at the switch
+- keeps services fast by balancing load away from struggling servers
+- tells the right people in plain English, by email, Telegram and on the dashboard
 
 ▶ **Demo video:** https://www.youtube.com/watch?v=wdtV-RWr1j8
 
@@ -14,12 +18,39 @@ FlowGuard is a Computer Networks Laboratory (CSE20110) mini project. It puts an 
 |---|---|
 | Least connections vs. round robin (one back-end slowed by 100 ms) | mean response **68.8 ms → 7.2 ms** |
 | Lab-native Random Forest (5-fold grouped CV, 1,725 windows) | **F1 1.000**, FPR 0.0%, 3.3 ms per window |
-| UDP flood on a 10 Mbit/s LB uplink: time to block the attacker | **1.18 s**, 0 false blocks |
+| UDP flood on a 10 Mbit/s uplink: time to block the attacker | **1.18 s**, 0 false blocks |
 | Legitimate mean response time during the flood | **269.4 ms** (no defence) → **7.1 ms** (with detection) |
 | UNSW-NB15 baseline Decision Tree (90 features) | F1 0.9802 (documented), < 15 ms inference |
-| Automated backend tests | 35 tests across 8 modules |
 
 All testbed numbers come from a single run per configuration in an emulated network. Treat them as relative comparisons, not production benchmarks.
+
+---
+
+## Dashboard
+
+A React 19 + TypeScript app with no UI libraries beyond React. Icons and charts are inline SVG.
+
+| Page | What it shows |
+|---|---|
+| **Overview** | Protection status, attacks blocked, median time to block, live response time, service health, recent incidents |
+| **Incidents** | Every detected attack; the detail page has a plain-English summary, timeline, evidence, before/during/after impact, who was notified, and Acknowledge / Unblock / False-positive actions |
+| **Network** | Live topology with named campus devices and a device inventory |
+| **Services** | Per-server health and request share, load-balancing algorithm, slow-server simulation |
+| **Drills** | Launch a UDP/SYN/ICMP flood from a lab machine and watch FlowGuard respond; drill history |
+| **Reports** | Weekly summary, "what protection is worth", CSV export, Save as PDF, email report |
+| **Settings** | Protection mode, notification rules, device names, detection-engine details |
+
+When the lab agent is not reachable, the dashboard shows demo data based on the measured results, and labels it **Demo data**.
+
+## Alerts
+
+Alerts are routed by severity: each stakeholder receives only the severities ticked for them.
+
+- **Email** (Gmail SMTP): formatted alert with the summary and an "Open incident" link.
+- **Telegram:** instant alert with **Acknowledge** and **Unblock source** buttons that act on the incident.
+- **Dashboard:** pop-up and bell on every page.
+
+Every incident gets one alert plus a "Resolved" follow-up. Management receives a weekly report only, not every alert. Every delivery is logged. WhatsApp, SMS and voice escalation are on the roadmap.
 
 ---
 
@@ -28,17 +59,19 @@ All testbed numbers come from a single run per configuration in an emulated netw
 ```mermaid
 flowchart LR
     subgraph VM["Mininet testbed (Ubuntu VM)"]
-        C[client 10.0.0.1] --- S1((OVS switch s1))
-        A[attacker 10.0.0.2] --- S1
-        S1 --- LB[HAProxy lb 10.0.0.10]
-        LB --- B1[srv1 10.0.0.11]
-        LB --- B2[srv2 10.0.0.12]
-        LB --- B3[srv3 10.0.0.13]
+        C[Student laptop 10.0.0.1] --- S1((OVS switch s1))
+        A[Lab-3 PC-14 10.0.0.2] --- S1
+        S1 --- LB[Campus gateway / HAProxy 10.0.0.10]
+        LB --- B1[Exam portal 10.0.0.11]
+        LB --- B2[ERP 10.0.0.12]
+        LB --- B3[LMS 10.0.0.13]
         LB -. tcpdump .-> FX[1 s per-source windows]
         FX --> DET[Random Forest detector]
         DET -- OpenFlow drop rule --> S1
-        AG[lab_agent.py :8765]
+        AG[lab_agent.py :8765<br/>incidents + notifier]
     end
+    AG -- SSE --> UI[React dashboard :5173]
+    AG -- email / Telegram --> P[Stakeholders]
 
     subgraph GW["Gateway (host machine)"]
         RP[Offline replay / flow submit] --> FA[90-feature adapter]
@@ -46,182 +79,92 @@ flowchart LR
         DT --> API[FastAPI REST + WebSocket :8000]
         API --> DB[(SQLite, WAL)]
     end
-
-    API --> UI[React 19 dashboard :5173]
-    AG -- SSE --> UI
 ```
-
-- **Testbed:** one Open vSwitch learning switch (no controller), a legitimate client, an attacker, an HAProxy load balancer (round robin or least connections) and three web back-ends.
-- **Lab-native detector:** nine features per source per 1-second window (packets, bytes, mean size, SYN ratio, distinct src/dst ports, TCP/UDP/ICMP share). A source classified as ATTACK is blocked with an `ovs-ofctl` drop rule on `s1`.
-- **Gateway:** FastAPI service that scores flows with the UNSW-NB15 Decision Tree, persists events to SQLite and pushes them over WebSocket. The gateway itself only **flags** flows; blocking happens in the testbed.
-- **Dashboard:** the **Lab** view controls and watches the Mininet testbed through `lab_agent.py`, and the **Monitor** view shows gateway traffic, back-end health, topology and the security feed.
 
 ---
 
 ## Repository structure
 
 ```
-├── backend/                 FastAPI gateway
-│   ├── main.py              REST + WebSocket endpoints
-│   ├── model_pipeline.py    90-feature adapter, encoder, imputer, classifier
-│   ├── flow_adapter.py      Pure-Python PCAP → bidirectional flow records
-│   ├── feature_mapping.py   Flow records → UNSW-NB15 schema with provenance
-│   ├── evaluation.py        Confusion matrix, F1, FPR, Wilson CIs, gates
-│   ├── report_generator.py  JSON / CSV / HTML experiment reports
-│   ├── database.py          SQLite (WAL) events, experiments, audit log
-│   ├── replay.py            Offline replay engine
-│   ├── fixtures/            Verified benign / attack flow records
-│   └── tests/               unittest suites
-├── model files/             UNSW-NB15 Decision Tree + encoder + imputer (.joblib)
-├── MN_Data/                 Mininet load-balancing & detection testbed
-│   ├── topo.py              Topology + smoke test
-│   ├── haproxy.cfg          Load balancer config
-│   ├── lb_test.py           Round robin vs. least connections experiment
-│   ├── collect_dataset.py   Labelled benign/attack traffic collection
-│   ├── feature_extractor.py tcpdump → 1 s window features
-│   ├── train_lab_model.py   DT / RF / XGBoost comparison → model_lab.joblib
-│   ├── detector.py          Live scoring + switch-level blocking
-│   ├── run_scenario.py      No-attack / flood / defended experiments
-│   ├── lab_session.py       Interactive lab session used by the agent
+├── src/                     React dashboard
+│   ├── pages/               Overview, Incidents, IncidentDetail, Network, Services, Drills, Reports, Settings
+│   ├── ui/                  Shell (sidebar, top bar, toasts), charts, icons, shared parts
+│   ├── state/store.tsx      Live connection to the lab agent (+ demo fallback)
+│   ├── api/                 Lab-agent and gateway clients
+│   ├── lib/                 Routing, formatting, derived metrics
+│   └── styles/app.css       Design system
+├── MN_Data/                 Mininet testbed, detector and lab agent
 │   ├── lab_agent.py         HTTP + SSE server the dashboard talks to
+│   ├── lab_session.py       Runs the lab (real Mininet or --simulate)
+│   ├── incidents.py         Turns detections into incidents with plain-English summaries
+│   ├── notifier.py          Email + Telegram alerts, routing, delivery log, weekly report
+│   ├── .env.example         Template for alert credentials (copy to .env)
+│   ├── topo.py · haproxy.cfg · lb_test.py · collect_dataset.py · feature_extractor.py
+│   ├── train_lab_model.py · detector.py · run_scenario.py
 │   └── *.csv                Collected dataset and experiment results
+├── backend/                 FastAPI gateway (UNSW-NB15 model, replay, SQLite, reports, tests)
+├── model files/             UNSW-NB15 Decision Tree + encoder + imputer
 ├── mininet/                 Gateway capture topology, smoke test, PCAP capture
-├── src/                     React 19 + TypeScript dashboard
-│   ├── components/lab/      Lab view (topology, controls, LB, detector, charts)
-│   ├── components/          Monitor view panels
-│   ├── api/                 Gateway and lab-agent clients
-│   └── hooks/useLab.ts
-├── docs/                    VM setup, scenarios, feature schema, evaluation, limitations
-├── package.json / vite.config.ts / tsconfig*.json
-└── backend/requirements.txt
+└── docs/                    VM setup, scenarios, feature schema, evaluation, limitations
 ```
 
 ---
 
 ## Getting started
 
-### Prerequisites
-
-- Python 3.11 or 3.12 and Node.js 18+ on the host machine
-- For the testbed: the Mininet 2.3 VM (Ubuntu 20.04) in VirtualBox, with Python 3.8+
-
-### 1. Gateway backend
-
-```bash
-pip install -r backend/requirements.txt
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
-
-# check it is up
-curl http://localhost:8000/api/v1/health
-```
-
-### 2. Dashboard
+### 1. Dashboard
 
 ```bash
 npm install
 npm run dev          # http://localhost:5173
-npm run build        # type-check (tsc -b) + production bundle
-npm run lint
 ```
 
-The default URLs can be overridden with `VITE_API_BASE_URL`, `VITE_WS_BASE_URL` and `VITE_LAB_URL` in a `.env.local` file.
-
-### 3. Mininet testbed (inside the VM)
-
-Copy the `MN_Data/` folder into the VM, then:
+### 2. Lab agent (inside the Mininet VM)
 
 ```bash
 sudo apt install mininet openvswitch-switch haproxy hping3 iperf nmap curl tcpdump
-pip3 install scikit-learn pandas joblib      # xgboost is optional
-
+pip3 install scikit-learn pandas joblib
 cd MN_Data
-sudo mn -c && sudo python3 topo.py --test    # expect: SMOKE TEST PASSED
-sudo python3 lb_test.py                      # → results_lb.csv
-sudo python3 collect_dataset.py              # → dataset_lab.csv (optional, dataset is included)
-python3 train_lab_model.py                   # → model_lab.joblib, results_model.csv
-sudo python3 run_scenario.py                 # → results_scenarios_10M.csv, results_timeline_10M.csv
-sudo python3 run_scenario.py --lb-bw 100     # 100 Mbit/s control run
+python3 train_lab_model.py            # creates model_lab.joblib (once)
+sudo python3 lab_agent.py             # real network on port 8765
+python3 lab_agent.py --simulate       # no Mininet needed (preview)
 ```
 
-`model_lab.joblib` is not committed. Run `train_lab_model.py` once before using the detector, the scenarios or the lab agent.
+In VirtualBox, forward **host port 8765 → guest port 8765**. Open the dashboard, go to **Drills**, start monitoring and launch an attack.
 
-### 4. Live lab in the dashboard
+### 3. Alerts (optional)
 
 ```bash
-# inside the VM
-sudo python3 lab_agent.py            # real Mininet lab on port 8765
-python3 lab_agent.py --simulate      # preview mode, no Mininet needed
+cp MN_Data/.env.example MN_Data/.env    # add Gmail app password and Telegram bot token
 ```
 
-In VirtualBox, forward **host port 8765 → guest port 8765**, then open the **Lab** view in the dashboard to start sessions, switch the balancing algorithm, toggle defence and launch attacks.
+Restart the agent. Send `/start` to your Telegram bot to get your chat ID, then add stakeholders in **Settings → Notifications** and press **Send test alert**.
+
+### 4. Gateway backend and experiments
+
+```bash
+pip install -r backend/requirements.txt
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+python -m unittest discover backend/tests -v
+
+cd MN_Data
+sudo mn -c && sudo python3 topo.py --test    # smoke test
+sudo python3 lb_test.py                      # round robin vs. least connections
+sudo python3 run_scenario.py                 # no attack / flood / defended
+```
 
 > ⚠️ Attack traffic (hping3 / nmap) must only be generated inside the isolated Mininet network.
 
 ---
 
-## Tests
-
-```bash
-python -m unittest discover backend/tests -v
-```
-
-| Module | Covers |
-|---|---|
-| `test_model_pipeline` | 90-feature shape, categorical encoding, imputation, classification |
-| `test_api` | REST validation, predict / batch predict, snapshot, fault injection |
-| `test_e2e_replay` | Replay lifecycle, SQLite persistence, WebSocket delivery |
-| `test_feature_schema` | Feature ordering and provenance tiers |
-| `test_flow_adapter` | PCAP parsing and flow construction |
-| `test_evaluation` | Metrics, confidence intervals, unlabeled-data handling |
-| `test_experiments_api` | Experiment registration and report export |
-| `test_mininet_config` | Topology addressing and configuration |
-
-Testbed experiments T18–T24 (smoke test, load balancing, model CV, flood with and without defence) are run with the `MN_Data` scripts above.
-
----
-
-## Gateway API
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/v1/health` | Service status and model readiness |
-| `GET` | `/api/v1/model/info` | Feature contract, classes, tree depth |
-| `POST` | `/api/v1/flows/predict` | Score a single flow (stored and broadcast) |
-| `POST` | `/api/v1/flows/predict_batch` | Score up to 100 flows |
-| `POST` | `/api/v1/flow/submit` | Ingest a captured flow with ground truth |
-| `GET` | `/api/v1/dashboard/snapshot` | Aggregate counts, back-end health, recent events |
-| `GET` | `/api/v1/events` | Paginated, filterable event history |
-| `POST` | `/api/v1/lab/backends/{id}/fail` | Simulated back-end fault injection |
-| `GET/POST` | `/api/v1/experiments` | List / register experiment runs |
-| `GET` | `/api/v1/experiments/{id}/report` | Report as `json`, `csv` or `html` |
-| `POST` | `/api/v1/replay/start` · `/stop` | Control the offline replay engine |
-| `WS` | `/api/v1/events/stream` | Live event stream with ping/pong heartbeat |
-
-Lab agent (`MN_Data/lab_agent.py`, port 8765): `GET /api/lab/health`, `/status`, `/stream` (SSE), `/history` · `POST /api/lab/start`, `/command`, `/stop`, `/history/clear`.
-
----
-
 ## Limitations
 
-- Binary classification only (NORMAL / ATTACK).
-- Results are from an emulated, single-switch lab with one run per configuration. The near-perfect lab scores reflect easily separable floods, and low-rate attacks were not tested.
-- Per-source blocking assumes few attacker addresses, so distributed or spoofed attacks need aggregate mitigation.
-- The UNSW-NB15 baseline was not evaluated on lab traffic because its features cannot be derived from the lab windows.
-- Mininet needs Linux. On Windows, use the replay engine or `lab_agent.py --simulate`.
+- Binary classification only (normal / attack). Attack type in incidents comes from the drill or from traffic features.
+- Results come from an emulated, single-switch lab with one run per configuration. Low-rate attacks were not tested.
+- Per-source blocking assumes few attacker addresses; distributed or spoofed attacks need aggregate mitigation.
+- Mininet needs Linux. On Windows, use `lab_agent.py --simulate` or the gateway's replay engine.
 
-See [`docs/known-limitations.md`](docs/known-limitations.md) and [`docs/troubleshooting.md`](docs/troubleshooting.md) for details.
-
----
-
-## Documentation
-
-- [VM setup](docs/vm-setup.md)
-- [Traffic scenarios](docs/scenarios.md)
-- [Feature schema](docs/feature-schema.md)
-- [Evaluation methodology](docs/evaluation-methodology.md)
-- [Mininet implementation plan](docs/mininet-implementation-plan.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [Known limitations](docs/known-limitations.md)
+See [`docs/known-limitations.md`](docs/known-limitations.md) and [`docs/troubleshooting.md`](docs/troubleshooting.md).
 
 ---
 
@@ -230,5 +173,3 @@ See [`docs/known-limitations.md`](docs/known-limitations.md) and [`docs/troubles
 Aviraj Sinha · Kalp Lad · Palash Ranka · Aaradhya Banginwar
 
 Guided by **Dr. Uma Pujeri**, Department of Computer Engineering and Technology, 2026–27.
-
-Built with FastAPI, scikit-learn, React, Vite, Recharts, Mininet, Open vSwitch and HAProxy. Baseline model trained on the [UNSW-NB15](https://research.unsw.edu.au/projects/unsw-nb15-dataset) dataset.

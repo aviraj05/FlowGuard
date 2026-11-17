@@ -538,8 +538,10 @@ class SimWorld:
                     action = "flagged"
                     emit_event("flagged", "Detector flagged %s as ATTACK (%d pkts/s) - monitor mode, not blocking [simulated]"
                                % (ATTACKER_IP, pps), "warn")
-            emit({"type": "detector", "ts": now, "src": ATTACKER_IP, "pkts": pps, "bytes": pps * 1000,
-                  "mean_len": 1000.0, "syn_ratio": 0.0, "score": round(self.rng.uniform(0.97, 1.0), 3),
+            syn = self.attack_kind == "syn"
+            emit({"type": "detector", "ts": now, "src": ATTACKER_IP, "pkts": pps, "bytes": pps * (0 if syn else 1000),
+                  "mean_len": 0.0 if syn else 1000.0, "syn_ratio": 1.0 if syn else 0.0,
+                  "score": round(self.rng.uniform(0.97, 1.0), 3),
                   "verdict": "attack", "action": action})
         if self.mode != "off":
             emit({"type": "detector", "ts": now, "src": CLIENT_IP, "pkts": self.rng.randint(25, 70),

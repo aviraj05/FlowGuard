@@ -4,16 +4,20 @@
  */
 import type {
   AgentConnection,
+  Device,
   LabCommand,
   LabHealth,
   LabMessage,
   LabStartConfig,
+  NotificationEntry,
+  NotifyConfig,
+  Stakeholder,
 } from './labTypes';
 
 // With VirtualBox port forwarding (host 8765 -> VM 8765) this is just localhost.
 export const LAB_URL: string = import.meta.env.VITE_LAB_URL || 'http://localhost:8765';
 
-interface ActionResult {
+export interface ActionResult {
   ok: boolean;
   message: string;
 }
@@ -51,6 +55,32 @@ export function sendLabCommand(cmd: LabCommand): Promise<ActionResult> {
 
 export function clearLabHistory(): Promise<ActionResult> {
   return request<ActionResult>('POST', '/history/clear', {});
+}
+
+export type IncidentAction = 'ack' | 'unblock' | 'false_positive' | 'resolve';
+
+export function incidentAction(id: string, action: IncidentAction): Promise<ActionResult> {
+  return request<ActionResult>('POST', `/incidents/${encodeURIComponent(id)}/action`, { action, who: 'Dashboard' });
+}
+
+export function saveDevices(devices: Device[]): Promise<ActionResult> {
+  return request<ActionResult>('POST', '/devices', { devices });
+}
+
+export function fetchNotifyConfig(): Promise<NotifyConfig> {
+  return request<NotifyConfig>('GET', '/notify/config');
+}
+
+export function saveNotifyConfig(stakeholders: Stakeholder[], inApp: boolean): Promise<ActionResult & { config?: NotifyConfig }> {
+  return request<ActionResult & { config?: NotifyConfig }>('POST', '/notify/config', { stakeholders, in_app: inApp });
+}
+
+export function sendTestAlert(stakeholder?: string): Promise<ActionResult & { results: NotificationEntry[] }> {
+  return request<ActionResult & { results: NotificationEntry[] }>('POST', '/notify/test', { stakeholder });
+}
+
+export function sendWeeklyReport(): Promise<ActionResult & { results: NotificationEntry[] }> {
+  return request<ActionResult & { results: NotificationEntry[] }>('POST', '/notify/report', {});
 }
 
 /** Opens the live stream and reconnects automatically. Returns an unsubscribe function. */

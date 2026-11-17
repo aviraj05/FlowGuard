@@ -97,6 +97,102 @@ export interface LabEpisode {
   after_ms: number | null;
 }
 
+export type Severity = 'critical' | 'high' | 'medium';
+export type IncidentStatus = 'active' | 'contained' | 'resolved';
+
+export interface TimelineEntry {
+  ts: number;
+  kind: string;
+  text: string;
+}
+
+export interface NotificationEntry {
+  ts: number;
+  incident: string;
+  event: 'opened' | 'resolved' | 'test' | 'weekly_report';
+  channel: 'email' | 'telegram' | 'in_app';
+  to: string;
+  stakeholder?: string;
+  status: 'sent' | 'skipped' | 'failed';
+  detail: string;
+}
+
+export interface Incident {
+  id: string;
+  seq: number;
+  src: string;
+  src_name: string;
+  target: string;
+  target_name: string;
+  kind: LabAttackKind | 'scan';
+  severity: Severity;
+  status: IncidentStatus;
+  mode: string;
+  simulated: boolean;
+  opened: number;
+  updated: number;
+  attack_started: number | null;
+  blocked_at: number | null;
+  resolved_at: number | null;
+  ack_by: string | null;
+  ack_at: number | null;
+  false_positive: boolean;
+  evidence: {
+    peak_pps: number | null;
+    normal_pps: number | null;
+    ratio: number | null;
+    score: number | null;
+    mean_len: number | null;
+    syn_ratio: number | null;
+    windows: number;
+  };
+  impact: {
+    baseline_ms: number | null;
+    attack_ms: number | null;
+    attack_p95_ms: number | null;
+    after_ms: number | null;
+    detect_delay_s: number | null;
+    completed: number | null;
+    failed: number | null;
+  };
+  timeline: TimelineEntry[];
+  notifications: NotificationEntry[];
+  series: [number, number | null][];
+  summary: string;
+}
+
+export interface Device {
+  ip: string;
+  host: string;
+  name: string;
+  role: string;
+  location: string;
+  owner: string;
+  critical: boolean;
+}
+
+export interface Stakeholder {
+  id: string;
+  name: string;
+  role: string;
+  email: string;
+  telegram_chat_id: string;
+  channels: ('email' | 'telegram')[];
+  severities: Severity[];
+  resolved: boolean;
+  weekly_report: boolean;
+}
+
+export interface NotifyConfig {
+  stakeholders: Stakeholder[];
+  in_app: boolean;
+  channels: {
+    email: { configured: boolean; sender: string | null };
+    telegram: { configured: boolean; bot: string | null };
+    in_app: { configured: boolean };
+  };
+}
+
 export interface LabSnapshot {
   type: 'snapshot';
   status: LabStatus;
@@ -105,7 +201,14 @@ export interface LabSnapshot {
   events: LabEvent[];
   detector: Record<string, LabDetectorWindow>;
   episodes: LabEpisode[];
+  incidents?: Incident[];
+  notify_log?: NotificationEntry[];
+  devices?: Device[];
 }
+
+export interface LabIncidentMsg { type: 'incident'; incident: Incident; what?: string }
+export interface LabNotificationMsg { type: 'notification'; entry: NotificationEntry }
+export interface LabDevicesMsg { type: 'devices'; devices: Device[] }
 
 export interface LabResetMsg { type: 'reset' }
 export interface LabHistoryClearedMsg { type: 'history_cleared' }
@@ -118,7 +221,10 @@ export type LabMessage =
   | LabEvent
   | LabEpisode
   | LabResetMsg
-  | LabHistoryClearedMsg;
+  | LabHistoryClearedMsg
+  | LabIncidentMsg
+  | LabNotificationMsg
+  | LabDevicesMsg;
 
 export interface LabStartConfig {
   algo: LabAlgo;

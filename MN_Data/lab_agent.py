@@ -13,6 +13,13 @@ The dashboard talks to it directly:
     POST /api/lab/command    {"cmd": ...}  forwarded to the running session
     POST /api/lab/stop
     POST /api/lab/history/clear
+    GET  /api/lab/incidents                 incidents (newest last)
+    POST /api/lab/incidents/<id>/action     {"action": "ack"|"unblock"|"false_positive"|"resolve"}
+    GET  /api/lab/devices  POST /api/lab/devices   device names / owners
+    GET  /api/lab/notify/config  POST /api/lab/notify/config
+    POST /api/lab/notify/test    {"stakeholder": id?}
+    POST /api/lab/notify/report  weekly report email
+    GET  /api/lab/notify/log
 
 Usage:   sudo python3 lab_agent.py            (real Mininet lab)
          python3 lab_agent.py --simulate      (preview mode, no Mininet needed)
@@ -28,6 +35,10 @@ import threading
 import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from incidents import Devices, IncidentManager  # noqa: E402
+from notifier import Notifier  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SESSION = os.path.join(HERE, "lab_session.py")
@@ -51,6 +62,27 @@ class Hub:
         self.episodes = self._load_history()
         self.subs = []
         self.log_tail = deque(maxlen=15)
+        self.devices = Devices()
+        self.incidents = IncidentManager(self.devices, self._incident_changed)
+        self.notifier = Notifier(self.publish, self.incident_action)
+
+    # ---- incidents
+    def _incident_changed(self, inc, what):
+        self.publish({"type": "incident", "incident": inc, "what": what})
+        self.notifier.on_incident(inc, what)
+
+    def incident_action(self, inc_id, action, who="Dashboard"):
+        if action == "unblock":
+            inc = self.incidents.get(inc_id)
+            if inc is None:
+                return False, "Incident not found"
+            if inc["status"] == "resolved":
+                return False, "Incident already resolved (attacker was released automatically)"
+            ok, msg = self.command({"cmd": "unblock"})
+            if not ok:
+                return False, msg
+        inc, msg = self.incidents.action(inc_id, action, who)
+        return inc is not None, msg
 
     # ---- history
     def _load_history(self):
@@ -100,6 +132,10 @@ class Hub:
                 self.events.clear()
                 self.detector = {}
             subs = list(self.subs)
+        if t in ("status", "tick", "detector", "event", "episode"):
+            self.incidents.feed(obj)
+        elif t == "incident":
+            self.incidents._save()
         for q in subs:
             try:
                 q.put_nowait(obj)
@@ -110,7 +146,9 @@ class Hub:
         with self.lock:
             return {"type": "snapshot", "status": self.status, "running": self._running(),
                     "ticks": list(self.ticks), "events": list(self.events),
-                    "detector": dict(self.detector), "episodes": list(self.episodes)}
+                    "detector": dict(self.detector), "episodes": list(self.episodes),
+                    "incidents": self.incidents.list()[-100:], "notify_log": self.notifier.log[-60:],
+                    "devices": self.devices.items}
 
     def _running(self):
         return self.proc is not None and self.proc.poll() is None
@@ -223,6 +261,7 @@ class Hub:
         with self.lock:
             self.episodes = []
         self._save_history()
+        self.incidents.clear()
         self.publish({"type": "history_cleared"})
 
 
@@ -238,6 +277,7 @@ class Handler(BaseHTTPRequestHandler):
     def _cors(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
     def _json(self, obj, code=200):
@@ -272,6 +312,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"episodes": HUB.episodes})
         elif path == "/api/lab/stream":
             self._stream()
+        elif path == "/api/lab/incidents":
+            self._json({"incidents": HUB.incidents.list()})
+        elif path == "/api/lab/devices":
+            self._json({"devices": HUB.devices.items})
+        elif path == "/api/lab/notify/config":
+            self._json(HUB.notifier.public_config())
+        elif path == "/api/lab/notify/log":
+            self._json({"log": HUB.notifier.log[-200:]})
         else:
             self._json({"error": "not found"}, 404)
 
@@ -290,6 +338,25 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/lab/history/clear":
             HUB.clear_history()
             self._json({"ok": True})
+        elif path.startswith("/api/lab/incidents/") and path.endswith("/action"):
+            inc_id = path[len("/api/lab/incidents/"):-len("/action")]
+            ok, msg = HUB.incident_action(inc_id, body.get("action"), body.get("who") or "Dashboard")
+            self._json({"ok": ok, "message": msg}, 200 if ok else 409)
+        elif path == "/api/lab/devices":
+            items = HUB.devices.save(body.get("devices") or [])
+            HUB.publish({"type": "devices", "devices": items})
+            self._json({"ok": True, "message": "Saved", "devices": items})
+        elif path == "/api/lab/notify/config":
+            ok, msg = HUB.notifier.save_config(body)
+            self._json({"ok": ok, "message": msg, "config": HUB.notifier.public_config()}, 200 if ok else 400)
+        elif path == "/api/lab/notify/test":
+            res = HUB.notifier.send_test(body.get("stakeholder"))
+            sent = sum(1 for r in res if r["status"] == "sent")
+            self._json({"ok": True, "message": "%d of %d test messages sent" % (sent, len(res)), "results": res})
+        elif path == "/api/lab/notify/report":
+            res = HUB.notifier.send_weekly_report(HUB.incidents.list())
+            sent = sum(1 for r in res if r["status"] == "sent")
+            self._json({"ok": True, "message": "Weekly report sent to %d of %d recipients" % (sent, len(res)), "results": res})
         else:
             self._json({"error": "not found"}, 404)
 
@@ -332,7 +399,10 @@ def main():
     print("  root=%s mininet=%s haproxy=%s hping3=%s model=%s%s" % (
         h["root"], h["mininet"], h["haproxy"], h["hping3"], h["model"],
         "  [SIMULATION by default]" if args.simulate else ""))
-    print("  Open the dashboard (Mininet Lab tab). Press Ctrl+C to stop.")
+    n = HUB.notifier
+    print("  notifications: email=%s telegram=%s  (secrets in MN_Data/.env)" % (
+        "ready" if n.email_ready() else "not configured", "ready" if n.telegram_ready() else "not configured"))
+    print("  Open the dashboard (Drills page). Press Ctrl+C to stop.")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
