@@ -8,6 +8,9 @@ import SecurityFeed from './components/SecurityFeed';
 import BackendMatrix from './components/BackendMatrix';
 import CacheMetricsPanel from './components/CacheMetrics';
 import TopologyMap from './components/TopologyMap';
+import EvaluationSummaryPanel from './components/EvaluationSummaryPanel';
+import ReportModal from './components/ReportModal';
+import LabView from './components/lab/LabView';
 import { generateInitialState, tick } from './data/mockEngine';
 import type { AppMode, Environment, GlobalState, SecurityLogEntry } from './types';
 import {
@@ -78,7 +81,7 @@ function reducer(state: GlobalState, action: Action): GlobalState {
 
 function dtoToLogEntry(dto: EventItemDTO): SecurityLogEntry {
   const isAttack = dto.label === 1 || dto.label_name === 'ATTACK';
-  const actionType = isAttack ? 'blocked' : 'allowed';
+  const actionType = isAttack ? 'flagged' : 'allowed';
   return {
     id: dto.event_id,
     timestamp: new Date(dto.timestamp).getTime() || Date.now(),
@@ -110,12 +113,14 @@ export default function App() {
   const [totalLiveEvents, setTotalLiveEvents] = useState(0);
   const [lastUpdateTime, setLastUpdateTime] = useState<string>('');
   const [apiErrorMessage, setApiErrorMessage] = useState<string | null>(null);
+  const [isReportModalOpen, setIsReportModalOpen] = useState(false);
+  const [view, setView] = useState<'lab' | 'monitor'>('lab');
 
   const demoIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Demo mode ticker (runs only in demo mode)
   useEffect(() => {
-    if (mode === 'demo') {
+    if (mode === 'demo' && view === 'monitor') {
       demoIntervalRef.current = setInterval(() => dispatch({ type: 'TICK' }), 1200);
     } else {
       if (demoIntervalRef.current) clearInterval(demoIntervalRef.current);
@@ -123,7 +128,7 @@ export default function App() {
     return () => {
       if (demoIntervalRef.current) clearInterval(demoIntervalRef.current);
     };
-  }, [mode]);
+  }, [mode, view]);
 
   // Live mode WebSocket and initial snapshot fetch
   useEffect(() => {
@@ -239,6 +244,43 @@ export default function App() {
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg-base)', display: 'flex', flexDirection: 'column' }}>
+      {/* ── View tabs: Mininet Lab (load balancing + ML defence) / Monitoring Dashboard ── */}
+      <nav
+        aria-label="Dashboard view"
+        style={{
+          display: 'flex', alignItems: 'center', gap: 12,
+          padding: '6px 1.25rem',
+          background: 'var(--bg-surface)',
+          borderBottom: '1px solid var(--border-subtle)',
+        }}
+      >
+        <span style={{ fontSize: 'var(--text-md)', fontWeight: 700, color: 'var(--text-primary)', letterSpacing: '-0.02em' }}>
+          FlowGuard
+        </span>
+        <div className="env-toggle" role="group" aria-label="Dashboard view">
+          <button
+            id="view-lab"
+            className={`env-toggle-btn ${view === 'lab' ? 'active' : ''}`}
+            onClick={() => setView('lab')}
+            aria-pressed={view === 'lab'}
+          >
+            Mininet Lab &middot; load balancing + ML defence
+          </button>
+          <button
+            id="view-monitor"
+            className={`env-toggle-btn ${view === 'monitor' ? 'active' : ''}`}
+            onClick={() => setView('monitor')}
+            aria-pressed={view === 'monitor'}
+          >
+            Monitoring Dashboard
+          </button>
+        </div>
+      </nav>
+
+      {view === 'lab' ? (
+        <LabView />
+      ) : (
+        <>
       <Navbar
         state={state}
         onEnvironmentChange={handleEnvironmentChange}
@@ -248,6 +290,7 @@ export default function App() {
         isReplayRunning={isReplayRunning}
         onToggleReplay={handleToggleReplay}
         totalLiveEvents={totalLiveEvents}
+        onOpenReportModal={() => setIsReportModalOpen(true)}
       />
 
       {/* ── Banner: Mode description & warnings ── */}
@@ -340,6 +383,12 @@ export default function App() {
           />
         </div>
 
+        {/* ── Evaluation & Performance Gates Summary Panel ── */}
+        <EvaluationSummaryPanel
+          onOpenReportModal={() => setIsReportModalOpen(true)}
+          totalLiveEvents={totalLiveEvents}
+        />
+
         {/* ── Row 2: Security feed (3/5) + Cache metrics (2/5) ── */}
         <div
           style={{
@@ -361,6 +410,8 @@ export default function App() {
           />
         </div>
       </main>
+        </>
+      )}
 
       {/* ── Footer ── */}
       <footer
@@ -377,7 +428,7 @@ export default function App() {
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span className="mono" style={{ fontSize: 'var(--text-2xs)', color: 'var(--text-dim)' }}>
-            flowguard v2.4.1 · {envLabel} · Model: DecisionTree_UNSW90_v1.0 (90 features)
+            flowguard v2.4.1 · {envLabel} · {view === 'lab' ? 'Lab model: Random Forest (9 window features)' : 'Model: DecisionTree_UNSW90_v1.0 (90 features)'}
           </span>
           {mode === 'live' && (
             <span
@@ -420,6 +471,12 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* ── Evaluation Report Modal ── */}
+      <ReportModal
+        isOpen={isReportModalOpen}
+        onClose={() => setIsReportModalOpen(false)}
+      />
     </div>
   );
 }

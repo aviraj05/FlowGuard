@@ -81,6 +81,50 @@ export async function fetchReplayStatus(): Promise<ReplayStatusDTO> {
   return handleResponse<ReplayStatusDTO>(res);
 }
 
+export async function fetchExperimentRuns(): Promise<{ total: number; runs: any[] }> {
+  const res = await fetch(`${API_BASE_URL}/api/v1/experiments`);
+  return handleResponse<{ total: number; runs: any[] }>(res);
+}
+
+export async function fetchRunReport(
+  runId: string,
+  format: 'json' | 'csv' | 'html' = 'json',
+  includeRawIps = false
+): Promise<any> {
+  const url = `${API_BASE_URL}/api/v1/experiments/${encodeURIComponent(runId)}/report?format=${format}&include_raw_ips=${includeRawIps}`;
+  if (format === 'html' || format === 'csv') {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Report fetch failed: ${res.statusText}`);
+    return res.text();
+  }
+  const res = await fetch(url);
+  return handleResponse<any>(res);
+}
+
+export async function fetchCustomReport(
+  scenarioId?: string,
+  startDate?: string,
+  endDate?: string,
+  format: 'json' | 'csv' | 'html' = 'json',
+  includeRawIps = false
+): Promise<any> {
+  const params = new URLSearchParams();
+  if (scenarioId) params.append('scenario_id', scenarioId);
+  if (startDate) params.append('start_date', startDate);
+  if (endDate) params.append('end_date', endDate);
+  params.append('format', format);
+  params.append('include_raw_ips', String(includeRawIps));
+
+  const url = `${API_BASE_URL}/api/v1/reports/generate?${params.toString()}`;
+  if (format === 'html' || format === 'csv') {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Report fetch failed: ${res.statusText}`);
+    return res.text();
+  }
+  const res = await fetch(url);
+  return handleResponse<any>(res);
+}
+
 export type ConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error';
 
 export interface WebSocketCallbacks {

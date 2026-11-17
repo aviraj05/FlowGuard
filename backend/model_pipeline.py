@@ -23,10 +23,20 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODEL_DIR = PROJECT_ROOT / "model files"
 sys.path.insert(0, str(MODEL_DIR))
 
+BACKEND_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BACKEND_DIR))
+
 try:
     from feature_extraction import EXPECTED_FEATURES, UNSWFeatureExtractor
 except ImportError as err:
     raise RuntimeError(f"Failed to import feature_extraction from {MODEL_DIR}: {err}")
+
+from feature_schema import (
+    validate_flow_pre_inference,
+    analyze_feature_provenance,
+    SCHEMA_VERSION,
+    MODEL_VERSION,
+)
 
 logger = logging.getLogger("flowguard.pipeline")
 
@@ -148,9 +158,13 @@ class FlowGuardPipeline:
     def predict_flow(self, flow_dict: Dict[str, Any]) -> Dict[str, Any]:
         """
         Predicts classification for a single flow dictionary.
-        Returns label, human-readable name, probabilities, and policy recommendation.
+        Validates inputs, assesses feature provenance, and returns label, probabilities,
+        and policy recommendation.
         """
-        df = pd.DataFrame([flow_dict])
+        is_valid, validation_issues, cleaned_dict = validate_flow_pre_inference(flow_dict)
+        provenance = analyze_feature_provenance(flow_dict)
+
+        df = pd.DataFrame([cleaned_dict])
         transformed = self.transform_features(df)
         df_scored = pd.DataFrame(transformed, columns=EXPECTED_FEATURES)
 
@@ -175,15 +189,34 @@ class FlowGuardPipeline:
             "risk_score": round(prob_attack, 4),
             "action": action,
             "severity": severity,
-            "model_version": "DecisionTree_UNSW90_v1.0",
-            "schema_version": "flowguard-unsw-90-v1"
+            "model_version": MODEL_VERSION,
+            "schema_version": SCHEMA_VERSION,
+            "validation_issues": validation_issues,
+            "provenance": {
+                "counts": provenance["counts"],
+                "percentages": provenance["percentages"],
+                "imputation_rate": provenance["imputation_rate"],
+                "quality_status": provenance["quality_status"],
+                "is_reliable": provenance["is_reliable"]
+            }
         }
 
     def predict_batch(self, flows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Predicts classification for a list of flow dictionaries."""
+        """Predicts classification for a list of flow dictionaries with provenance."""
         if not flows:
             return []
-        df = pd.DataFrame(flows)
+        
+        cleaned_flows = []
+        provenances = []
+        all_issues = []
+        for flow in flows:
+            _, issues, cleaned = validate_flow_pre_inference(flow)
+            prov = analyze_feature_provenance(flow)
+            cleaned_flows.append(cleaned)
+            provenances.append(prov)
+            all_issues.append(issues)
+
+        df = pd.DataFrame(cleaned_flows)
         transformed = self.transform_features(df)
         df_scored = pd.DataFrame(transformed, columns=EXPECTED_FEATURES)
 
@@ -197,6 +230,7 @@ class FlowGuardPipeline:
             prob_attack = float(probas[i][1])
             action = "ALERT" if prob_attack >= 0.5 else "ALLOW"
             severity = "HIGH" if prob_attack > 0.8 else ("MEDIUM" if prob_attack >= 0.5 else "LOW")
+            prov = provenances[i]
 
             results.append({
                 "flow_id": flow.get("flow_id", f"flow-{i}"),
@@ -209,7 +243,16 @@ class FlowGuardPipeline:
                 "risk_score": round(prob_attack, 4),
                 "action": action,
                 "severity": severity,
-                "model_version": "DecisionTree_UNSW90_v1.0"
+                "model_version": MODEL_VERSION,
+                "schema_version": SCHEMA_VERSION,
+                "validation_issues": all_issues[i],
+                "provenance": {
+                    "counts": prov["counts"],
+                    "percentages": prov["percentages"],
+                    "imputation_rate": prov["imputation_rate"],
+                    "quality_status": prov["quality_status"],
+                    "is_reliable": prov["is_reliable"]
+                }
             })
         return results
 

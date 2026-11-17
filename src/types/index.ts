@@ -37,7 +37,7 @@ export interface SecurityLogEntry {
   statusCode: number;
   entropyScore: number;
   dgaScore: number;
-  action: 'allowed' | 'rate-limited' | 'blocked' | 'flagged';
+  action: 'allowed' | 'rate-limited' | 'blocked' | 'flagged' | 'alerted';
   byteSize: number;
   latencyMs: number;
   reason?: string;
@@ -48,7 +48,7 @@ export interface SecurityLogEntry {
   protocol?: string;
   service?: string;
   dstIp?: string;
-  sourceType?: 'demo' | 'replay' | 'api' | 'batch';
+  sourceType?: 'demo' | 'replay' | 'api' | 'batch' | 'mininet_capture';
 }
 
 export interface CacheMetrics {

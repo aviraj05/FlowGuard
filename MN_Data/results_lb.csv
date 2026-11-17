@@ -1,0 +1,5 @@
+algorithm,backends,srv1,srv2,srv3,success_pct,mean_ms,p95_ms,req_per_s
+roundrobin,equal,100,100,100,100.0,2.0,4.3,196.1
+leastconn,equal,101,99,100,100.0,2.1,4.6,197.9
+roundrobin,srv1 slow,100,100,100,100.0,68.8,203.7,172.3
+leastconn,srv1 slow,8,146,146,100.0,7.2,4.7,184.7

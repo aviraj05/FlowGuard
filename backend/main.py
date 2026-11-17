@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, HTMLResponse
 
 # Add backend directory to sys.path
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -31,12 +31,16 @@ from schemas import (
     BackendFailRequest,
     LabActionResponse,
     DashboardSnapshot,
-    EventItem
+    EventItem,
+    ExperimentRunCreate,
+    FlowSubmission,
 )
 from model_pipeline import get_pipeline, LABEL_MAP
 import database
 from websocket_manager import manager
 from replay import replay_engine
+from report_generator import build_experiment_report, generate_report_csv, generate_report_html
+from feature_mapping import map_flow_to_features
 
 logging.basicConfig(
     level=logging.INFO,
@@ -325,6 +329,157 @@ async def stop_replay():
 async def get_replay_status():
     """Returns current status of the offline flow replay engine."""
     return replay_engine.status()
+
+
+@app.get("/api/v1/experiments")
+async def list_experiment_runs(limit: int = Query(default=50, ge=1, le=200)):
+    """Lists recent Mininet experiment runs."""
+    runs = database.get_experiment_runs(limit=limit)
+    return {"total": len(runs), "runs": runs}
+
+
+@app.post("/api/v1/experiments")
+async def create_experiment_run(payload: ExperimentRunCreate):
+    """Registers or updates a Mininet experiment run manifest."""
+    run_dict = payload.model_dump()
+    database.save_experiment_run(run_dict)
+    return {"status": "SUCCESS", "run_id": payload.run_id, "message": "Experiment run recorded"}
+
+
+@app.get("/api/v1/experiments/{run_id}")
+async def get_experiment_details(run_id: str):
+    """Retrieves metadata and event counts for a specific experiment run."""
+    run = database.get_experiment_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Experiment run {run_id} not found")
+    events = database.get_events_for_run(run_id)
+    return {"run": run, "event_count": len(events)}
+
+
+@app.get("/api/v1/experiments/{run_id}/report")
+async def get_run_report(
+    run_id: str,
+    format: str = Query(default="json", pattern="^(json|csv|html)$"),
+    include_raw_ips: bool = Query(default=False)
+):
+    """Generates an honest evaluation report for an experiment run in JSON, CSV, or HTML."""
+    run = database.get_experiment_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Experiment run {run_id} not found")
+
+    report = build_experiment_report(run_id=run_id, include_raw_ips=include_raw_ips)
+
+    if format == "csv":
+        csv_content = generate_report_csv(report)
+        return PlainTextResponse(
+            csv_content,
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=flowguard_report_{run_id}.csv"}
+        )
+    elif format == "html":
+        html_content = generate_report_html(report)
+        return HTMLResponse(content=html_content)
+
+    return JSONResponse(content=report)
+
+
+@app.get("/api/v1/reports/generate")
+async def generate_custom_report(
+    scenario_id: Optional[str] = Query(default=None),
+    start_date: Optional[str] = Query(default=None),
+    end_date: Optional[str] = Query(default=None),
+    format: str = Query(default="json", pattern="^(json|csv|html)$"),
+    include_raw_ips: bool = Query(default=False)
+):
+    """Generates an evaluation report across custom criteria."""
+    report = build_experiment_report(
+        scenario_id=scenario_id,
+        start_date=start_date,
+        end_date=end_date,
+        include_raw_ips=include_raw_ips
+    )
+
+    if format == "csv":
+        csv_content = generate_report_csv(report)
+        return PlainTextResponse(
+            csv_content,
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=flowguard_custom_report.csv"}
+        )
+    elif format == "html":
+        html_content = generate_report_html(report)
+        return HTMLResponse(content=html_content)
+
+    return JSONResponse(content=report)
+
+
+@app.post("/api/v1/flow/submit")
+async def submit_flows_from_collector(payload: FlowSubmission):
+    """
+    Ingests live or captured flows from Mininet or remote agents.
+    Transforms raw flow records via FeatureMapping into the 90-feature schema,
+    evaluates predictions with feature provenance, persists with ground truth,
+    and streams to connected dashboards.
+    """
+    pipeline = get_pipeline()
+    processed_events = []
+
+    for raw_flow in payload.flows:
+        if "sbytes" in raw_flow and "total_bytes" not in raw_flow:
+            mapped_features, prov_tags = map_flow_to_features(raw_flow)
+        else:
+            mapped_features = raw_flow
+            prov_tags = raw_flow.get("_provenance_tags", {})
+
+        flow_id = raw_flow.get("flow_id") or f"flow-{uuid.uuid4().hex[:8]}"
+        mapped_features["flow_id"] = flow_id
+
+        try:
+            pred = pipeline.predict_flow(mapped_features)
+        except Exception as e:
+            logger.error("Failed to predict flow %s: %s", flow_id, e)
+            continue
+
+        prov_info = pred.get("provenance", {})
+        event_dict = {
+            "event_id": flow_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "src_ip": raw_flow.get("src_ip", raw_flow.get("srcip", "0.0.0.0")),
+            "dst_ip": raw_flow.get("dst_ip", raw_flow.get("dstip", "0.0.0.0")),
+            "src_port": int(raw_flow.get("sport", raw_flow.get("src_port", 0))),
+            "dst_port": int(raw_flow.get("dsport", raw_flow.get("dst_port", 0))),
+            "proto": raw_flow.get("proto", "tcp"),
+            "service": raw_flow.get("service", "-"),
+            "label": pred["label"],
+            "label_name": pred["label_name"],
+            "risk_score": pred["risk_score"],
+            "action": pred["action"],
+            "severity": pred["severity"],
+            "model_version": pred["model_version"],
+            "source_type": payload.source_type or "mininet_capture",
+            "run_id": payload.run_id,
+            "scenario_id": payload.scenario_id,
+            "ground_truth": payload.ground_truth_label,
+            "imputation_rate": prov_info.get("imputation_rate"),
+            "provenance": prov_info,
+            "latency_ms": 10.0
+        }
+
+        database.save_event(event_dict)
+        processed_events.append(event_dict)
+
+        # Broadcast live over WebSocket
+        await manager.broadcast({
+            "type": "new_event",
+            "data": event_dict
+        })
+
+    return {
+        "status": "SUCCESS",
+        "processed_count": len(processed_events),
+        "run_id": payload.run_id,
+        "source_type": payload.source_type
+    }
 
 
 @app.websocket("/api/v1/events/stream")

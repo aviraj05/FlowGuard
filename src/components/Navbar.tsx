@@ -1,4 +1,4 @@
-import { Activity, Play, Radio, Shield, Square, WifiOff, Wifi, Zap } from 'lucide-react';
+import { Activity, FileText, Play, Radio, Shield, Square, WifiOff, Wifi, Zap } from 'lucide-react';
 import type { AppMode, ClusterStatus, Environment, GlobalState } from '../types';
 import type { ConnectionState } from '../api/client';
 import { formatBytes, formatUptime } from '../utils/helpers';
@@ -12,6 +12,7 @@ interface NavbarProps {
   isReplayRunning: boolean;
   onToggleReplay: () => void;
   totalLiveEvents?: number;
+  onOpenReportModal?: () => void;
 }
 
 const CLUSTER_CONFIG = {
@@ -76,6 +77,7 @@ export default function Navbar({
   isReplayRunning,
   onToggleReplay,
   totalLiveEvents = 0,
+  onOpenReportModal,
 }: NavbarProps) {
   return (
     <header
@@ -165,6 +167,20 @@ export default function Navbar({
         >
           {isReplayRunning ? <Square size={9} /> : <Play size={9} />}
           {isReplayRunning ? 'Stop Replay' : 'Start Replay'}
+        </button>
+      )}
+
+      {/* ── Evaluation Report Trigger ────────────────────────────────── */}
+      {onOpenReportModal && (
+        <button
+          id="btn-open-report"
+          onClick={onOpenReportModal}
+          className="btn btn-secondary"
+          style={{ padding: '3px 8px', fontSize: 'var(--text-2xs)', gap: 4 }}
+          title="Generate model evaluation report (JSON / CSV / HTML)"
+        >
+          <FileText size={10} color="var(--blue)" />
+          Report
         </button>
       )}
 

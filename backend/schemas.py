@@ -123,3 +123,21 @@ class DashboardSnapshot(BaseModel):
     last_update: str
     backends: List[Dict[str, Any]]
     recent_events: List[EventItem]
+
+
+class ExperimentRunCreate(BaseModel):
+    run_id: str
+    scenario_id: str
+    description: Optional[str] = ""
+    ground_truth_label: Optional[int] = -1
+    ground_truth_name: Optional[str] = "UNKNOWN"
+    config: Optional[Dict[str, Any]] = None
+
+
+class FlowSubmission(BaseModel):
+    run_id: Optional[str] = None
+    scenario_id: Optional[str] = None
+    ground_truth_label: Optional[int] = None
+    source_type: Optional[str] = "mininet_capture"
+    flows: List[Dict[str, Any]]
+

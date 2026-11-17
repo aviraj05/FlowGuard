@@ -1,6 +1,6 @@
 // ─── Security Feed ────────────────────────────────────────────────────────
 import { useEffect, useRef, useState } from 'react';
-import { AlertTriangle, Ban, CheckCircle2, Pause, Play, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Pause, Play, ShieldAlert } from 'lucide-react';
 import type { SecurityLogEntry } from '../types';
 import { formatTimestamp, scoreColor } from '../utils/helpers';
 
@@ -19,17 +19,24 @@ const ACTION_CONFIG = {
     rowClass: 'log-allowed',
   },
   flagged: {
-    label: 'FLAG',
+    label: 'FLAGGED',
     color: 'var(--amber)',
     bg: 'var(--amber-dim)',
     Icon: AlertTriangle,
     rowClass: 'log-flagged',
   },
-  blocked: {
-    label: 'BLOCK',
+  alerted: {
+    label: 'ALERT',
     color: 'var(--red)',
     bg: 'var(--red-dim)',
-    Icon: Ban,
+    Icon: ShieldAlert,
+    rowClass: 'log-blocked',
+  },
+  blocked: {
+    label: 'FLAGGED',
+    color: 'var(--red)',
+    bg: 'var(--red-dim)',
+    Icon: AlertTriangle,
     rowClass: 'log-blocked',
   },
   'rate-limited': {
@@ -261,8 +268,8 @@ function LogRow({ entry, isNew }: { entry: SecurityLogEntry; isNew: boolean }) {
 
 const FILTERS: { key: FilterType; label: string }[] = [
   { key: 'all',          label: 'All' },
-  { key: 'blocked',      label: 'Blocked' },
-  { key: 'flagged',      label: 'Flagged' },
+  { key: 'flagged',      label: 'Flagged / Alerted' },
+  { key: 'allowed',      label: 'Allowed' },
   { key: 'rate-limited', label: 'Limited' },
 ];
 
@@ -288,13 +295,20 @@ export default function SecurityFeed({ entries }: SecurityFeedProps) {
     prevIds.current = currentIds;
   }, [entries, autoScroll]);
 
-  const filtered = filter === 'all' ? entries : entries.filter(e => e.action === filter);
+  const filtered = filter === 'all' 
+    ? entries 
+    : filter === 'flagged'
+    ? entries.filter(e => e.action === 'flagged' || e.action === 'alerted' || e.action === 'blocked')
+    : entries.filter(e => e.action === filter);
+
+  const flaggedCount = entries.filter(e => e.action === 'flagged' || e.action === 'alerted' || e.action === 'blocked').length;
 
   const counts: Record<FilterType, number> = {
     all:           entries.length,
     allowed:       entries.filter(e => e.action === 'allowed').length,
     blocked:       entries.filter(e => e.action === 'blocked').length,
-    flagged:       entries.filter(e => e.action === 'flagged').length,
+    alerted:       entries.filter(e => e.action === 'alerted').length,
+    flagged:       flaggedCount,
     'rate-limited': entries.filter(e => e.action === 'rate-limited').length,
   };
 
